@@ -61,7 +61,7 @@ const MARKDOWN = {
   "</font>": "",
 };
 
-const copyText = (action, targetObj) => {
+const copyText = async (action, targetObj) => {
   // Get the current URL.
   const url = window.location.href;
 
@@ -99,24 +99,92 @@ const copyText = (action, targetObj) => {
       ""
     );
 
-  // Helper to convert img tags to markdown
-  const convertImagesToMarkdown = (htmlContent) => {
-    return htmlContent.replace(/<img[^>]*src="([^"]*)"[^>]*alt="([^"]*)"[^>]*>/g, (match, src, alt) => {
-      return `![${alt}](${src})`;
-    }).replace(/<img[^>]*alt="([^"]*)"[^>]*src="([^"]*)"[^>]*>/g, (match, alt, src) => {
-      return `![${alt}](${src})`;
-    });
-  };
+  // Helper to process markdown conversion (including async image fetching)
+  const processMarkdown = async (htmlContent) => {
+    // Find all image tags
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(htmlContent, 'text/html');
+    const images = Array.from(doc.querySelectorAll('img'));
 
-  // Create a hidden textarea element.
-  const hiddenElement = document.createElement("textarea");
+    const imageReplacements = [];
+
+    // Fetch all images via background script
+    const fetchPromises = images.map(async (img) => {
+      const src = img.getAttribute('src');
+      const alt = img.getAttribute('alt') || '';
+      if (src) {
+        try {
+          const dataUrl = await new Promise((resolve, reject) => {
+            chrome.runtime.sendMessage({ action: "fetch_image", url: src }, (response) => {
+              if (chrome.runtime.lastError) {
+                reject(chrome.runtime.lastError);
+              } else if (response && response.success) {
+                resolve(response.data);
+              } else {
+                reject(new Error(response ? response.error : 'Unknown error'));
+              }
+            });
+          });
+          imageReplacements.push({ src, alt, replacement: `![${alt}](${dataUrl})` });
+        } catch (err) {
+          console.error("Failed to fetch image:", src, err);
+          // Fallback to original URL
+          imageReplacements.push({ src, alt, replacement: `![${alt}](${src})` });
+        }
+      }
+    });
+
+    await Promise.all(fetchPromises);
+
+    // Apply replacements
+    let markdown = htmlContent;
+    // Convert images first
+    // We need to be careful about replacing strings. 
+    // A safe way is to regex replace the img tag with the replacement.
+    // But simpler for now: reuse our previous regex logic but use the mapped values.
+
+    // Let's do a replace pass for each image we found and processed
+    // Note: This naive replacement assumes unique src/alt combos or consistent replacement.
+    // A robust way:
+    images.forEach(img => {
+      const src = img.getAttribute('src');
+      const alt = img.getAttribute('alt') || '';
+      const replacementObj = imageReplacements.find(r => r.src === src && r.alt === alt);
+      if (replacementObj) {
+        // Construct the img tag pattern roughly to replace it
+        // or just simple regex replace for this specific image if possible.
+        // Actually, let's use the replacement string we built.
+        // We need to substitute the IMG TEXT in the HTML with the Markdown Image string.
+        // This is tricky on raw HTML string.
+        // Better approach: modify the DOM we parsed, then serialize descriptionContent? 
+        // No, we are working on 'html' string which uses innerHTML.
+      }
+    });
+
+    // Alternative: Just regex replace all Img tags, and inside the callback, look up the dataUrl?
+    // Since we already fetched them, we can cache them by URL.
+    const urlMap = {};
+    imageReplacements.forEach(r => {
+      urlMap[r.src] = r.replacement;
+    });
+
+    markdown = markdown.replace(/<img[^>]*src="([^"]*)"[^>]*alt="([^"]*)"[^>]*>/g, (match, src, alt) => {
+      const key = imageReplacements.find(r => r.src === src && r.alt === alt);
+      return key ? key.replacement : `![${alt}](${src})`;
+    }).replace(/<img[^>]*alt="([^"]*)"[^>]*src="([^"]*)"[^>]*>/g, (match, alt, src) => {
+      const key = imageReplacements.find(r => r.src === src && r.alt === alt);
+      return key ? key.replacement : `![${alt}](${src})`;
+    });
+
+    return markdown;
+  };
 
   let value;
   if (action === "copyMarkdown") {
     let htmlToMarkdown = html;
 
-    // Replace images first
-    htmlToMarkdown = convertImagesToMarkdown(htmlToMarkdown);
+    // Process images and convert to Base64/Markdown
+    htmlToMarkdown = await processMarkdown(htmlToMarkdown);
 
     // Replace HTML elements with markdown equivalents.
     Object.keys(MARKDOWN).forEach((key) => {
@@ -134,24 +202,37 @@ const copyText = (action, targetObj) => {
     const lines = Array.from(document.querySelectorAll('.view-line'));
     if (lines.length > 0) {
       const code = lines.map(line => line.innerText).join('\n');
+
+      // Find language from DOM
+      let language = '';
+      const modeEl = document.querySelector('[data-mode-id]');
+      if (modeEl) {
+        language = modeEl.getAttribute('data-mode-id');
+      }
+
       // Append code block to markdown
-      value += `\n\n\`\`\`typescript\n${code}\n\`\`\``;
+      value += `\n\n\`\`\`${language}\n${code}\n\`\`\``;
     }
   } else {
     // Format the plain text string and add the title and URL.
     value = `URL: ${url}\n\n${title}\n\n${text}`;
   }
 
-  // Set the value of the hidden textarea element.
-  hiddenElement.value = value;
-  // Add the element to the document.
-  document.body.appendChild(hiddenElement);
-  // Select the text in the element.
-  hiddenElement.select();
-  // Copy the text.
-  document.execCommand("copy");
-  // Remove the hidden element from the document.
-  document.body.removeChild(hiddenElement);
+  // Copy to clipboard
+  try {
+    await navigator.clipboard.writeText(value);
+  } catch (err) {
+    console.error('Failed to copy text: ', err);
+    // Fallback (though execCommand might fail in async function without user gesture sometimes, 
+    // but usually the initial click grants permission for a short window. 
+    // If the fetch takes too long, this might fail.)
+    const hiddenElement = document.createElement("textarea");
+    hiddenElement.value = value;
+    document.body.appendChild(hiddenElement);
+    hiddenElement.select();
+    document.execCommand("copy");
+    document.body.removeChild(hiddenElement);
+  }
 };
 
 // Set a timeout to give the page time to load before adding the buttons.
