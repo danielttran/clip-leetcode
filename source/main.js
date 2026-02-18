@@ -61,9 +61,10 @@ const MARKDOWN = {
   "</font>": "",
 };
 
-const copyText = (isMarkdown, targetObj) => {
+const copyText = (action, targetObj) => {
   // Get the current URL.
   const url = window.location.href;
+
 
   // Try to find the elements for the old version of the website.
   let title;
@@ -76,8 +77,8 @@ const copyText = (isMarkdown, targetObj) => {
   const descEl = document.querySelector(targetObj.descriptionSelector);
 
   if (!titleEl || !descEl) {
-      console.error("Could not find title or description elements to copy.");
-      return;
+    console.error("Could not find title or description elements to copy.");
+    return;
   }
 
   // Get title
@@ -100,20 +101,20 @@ const copyText = (isMarkdown, targetObj) => {
 
   // Helper to convert img tags to markdown
   const convertImagesToMarkdown = (htmlContent) => {
-      return htmlContent.replace(/<img[^>]*src="([^"]*)"[^>]*alt="([^"]*)"[^>]*>/g, (match, src, alt) => {
-          return `![${alt}](${src})`;
-      }).replace(/<img[^>]*alt="([^"]*)"[^>]*src="([^"]*)"[^>]*>/g, (match, alt, src) => {
-          return `![${alt}](${src})`;
-      });
+    return htmlContent.replace(/<img[^>]*src="([^"]*)"[^>]*alt="([^"]*)"[^>]*>/g, (match, src, alt) => {
+      return `![${alt}](${src})`;
+    }).replace(/<img[^>]*alt="([^"]*)"[^>]*src="([^"]*)"[^>]*>/g, (match, alt, src) => {
+      return `![${alt}](${src})`;
+    });
   };
 
   // Create a hidden textarea element.
   const hiddenElement = document.createElement("textarea");
 
   let value;
-  if (isMarkdown) {
+  if (action === "copyMarkdown") {
     let htmlToMarkdown = html;
-    
+
     // Replace images first
     htmlToMarkdown = convertImagesToMarkdown(htmlToMarkdown);
 
@@ -128,6 +129,14 @@ const copyText = (isMarkdown, targetObj) => {
     value = `# [${title}](${url})\n\n${htmlToMarkdown
       .replace(/(\n){2,}/g, "\n\n")
       .trim()}`;
+
+    // Try to get solution code
+    const lines = Array.from(document.querySelectorAll('.view-line'));
+    if (lines.length > 0) {
+      const code = lines.map(line => line.innerText).join('\n');
+      // Append code block to markdown
+      value += `\n\n\`\`\`typescript\n${code}\n\`\`\``;
+    }
   } else {
     // Format the plain text string and add the title and URL.
     value = `URL: ${url}\n\n${title}\n\n${text}`;
@@ -208,8 +217,8 @@ setTimeout(() => {
   });
 
   if (filteredTarget.length > 0) {
-      targetObj = filteredTarget[0];
-      targetElement = document.querySelector(targetObj.titleSelector);
+    targetObj = filteredTarget[0];
+    targetElement = document.querySelector(targetObj.titleSelector);
   }
 
   // Create a container for the buttons.
@@ -217,11 +226,11 @@ setTimeout(() => {
 
   // Style button by layout
   if (targetObj) {
-      if (targetObj.useStyle) {
-        buttonContainer.style = targetObj.style;
-      } else {
-        targetObj.classList.forEach((i) => buttonContainer.classList.add(i));
-      }
+    if (targetObj.useStyle) {
+      buttonContainer.style = targetObj.style;
+    } else {
+      targetObj.classList.forEach((i) => buttonContainer.classList.add(i));
+    }
   }
 
   if (targetElement) {
@@ -240,7 +249,6 @@ setTimeout(() => {
       text-align: center;
     `;
 
-    // Loop through the buttons and add them to the button container.
     const buttons = ["copy", "copyMarkdown"];
     buttons.forEach((button) => {
       const _button = document.createElement("div");
@@ -253,7 +261,7 @@ setTimeout(() => {
       // Event listeners.
       _button.addEventListener("click", () => {
         // Pass the target object which contains selectors, NOT the stale DOM element
-        copyText(button === "copyMarkdown", targetObj);
+        copyText(button, targetObj);
         _button.innerText = BUTTON_ACTION_TEXT;
         setTimeout(
           () => (_button.innerText = BUTTON_MAP[button].text),
