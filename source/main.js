@@ -48,8 +48,8 @@ const MARKDOWN = {
   "</strong>": "** ",
   "<pre>": "\n```\n",
   "</pre>": "```\n\n",
-  "<code>": "<code>",
-  "</code>": "</code>",
+  "<code>": "`",
+  "</code>": "`",
   "&lt;": "<",
   "&gt;": ">",
   "<sup>": "^",
@@ -71,11 +71,20 @@ const copyText = (isMarkdown, targetObj) => {
   let text;
   let html;
 
+  // Get current title and description using the stored selectors
+  const titleEl = document.querySelector(targetObj.titleSelector);
+  const descEl = document.querySelector(targetObj.descriptionSelector);
+
+  if (!titleEl || !descEl) {
+      console.error("Could not find title or description elements to copy.");
+      return;
+  }
+
   // Get title
-  title = targetObj.titleDom.innerText;
+  title = titleEl.innerText;
 
   // Get main problem description
-  descriptionContent = targetObj.descriptionDom;
+  descriptionContent = descEl;
 
   // Clean the content to be copied
   text = descriptionContent.textContent.replace(/(\n){2,}/g, "\n\n").trim();
@@ -89,12 +98,25 @@ const copyText = (isMarkdown, targetObj) => {
       ""
     );
 
+  // Helper to convert img tags to markdown
+  const convertImagesToMarkdown = (htmlContent) => {
+      return htmlContent.replace(/<img[^>]*src="([^"]*)"[^>]*alt="([^"]*)"[^>]*>/g, (match, src, alt) => {
+          return `![${alt}](${src})`;
+      }).replace(/<img[^>]*alt="([^"]*)"[^>]*src="([^"]*)"[^>]*>/g, (match, alt, src) => {
+          return `![${alt}](${src})`;
+      });
+  };
+
   // Create a hidden textarea element.
   const hiddenElement = document.createElement("textarea");
 
   let value;
   if (isMarkdown) {
     let htmlToMarkdown = html;
+    
+    // Replace images first
+    htmlToMarkdown = convertImagesToMarkdown(htmlToMarkdown);
+
     // Replace HTML elements with markdown equivalents.
     Object.keys(MARKDOWN).forEach((key) => {
       htmlToMarkdown = htmlToMarkdown.replace(
@@ -125,14 +147,12 @@ const copyText = (isMarkdown, targetObj) => {
 
 // Set a timeout to give the page time to load before adding the buttons.
 setTimeout(() => {
-  // Target Layouts
+  // Target Layouts with Selectors instead of DOM elements
   const TARGETS = [
     {
       name: "originalLayout",
-      titleDom: document.querySelector("[data-cy=question-title]"),
-      descriptionDom: document.querySelector(
-        "[data-track-load=description_content]"
-      ),
+      titleSelector: "[data-cy=question-title]",
+      descriptionSelector: "[data-track-load=description_content]",
       useStyle: true,
       style: `
         position: absolute;
@@ -144,12 +164,8 @@ setTimeout(() => {
     },
     {
       name: "newLayout",
-      titleDom: document.querySelector(
-        ".mr-2.text-lg.font-medium.text-label-1.dark\\:text-dark-label-1"
-      ),
-      descriptionDom: document.querySelector(
-        "[data-track-load=description_content]"
-      ),
+      titleSelector: ".mr-2.text-lg.font-medium.text-label-1.dark\\:text-dark-label-1",
+      descriptionSelector: "[data-track-load=description_content]",
       useStyle: false,
       style: "",
       classList: [
@@ -163,22 +179,16 @@ setTimeout(() => {
     },
     {
       name: "contestLayout",
-      titleDom: document.querySelector(
-        "#base_content > div.container > div > div > div.question-title.clearfix > h3"
-      ),
-      descriptionDom: document.querySelector(
-        "div.question-content.default-content"
-      ),
+      titleSelector: "#base_content > div.container > div > div > div.question-title.clearfix > h3",
+      descriptionSelector: "div.question-content.default-content",
       useStyle: true,
       style: `display: flex;`,
       classList: [],
     },
     {
       name: "dynamicLayout",
-      titleDom: document.querySelector(".text-title-large"),
-      descriptionDom: document.querySelector(
-        "[data-track-load=description_content]"
-      ),
+      titleSelector: ".text-title-large",
+      descriptionSelector: "[data-track-load=description_content]",
       useStyle: true,
       style: `display: flex;`,
       classList: [],
@@ -186,32 +196,37 @@ setTimeout(() => {
   ];
 
   // Determine which target layout.
-  let target;
+  let targetElement;
+  let targetObj;
+
+  // Filter target DOM that is not null
+  const filteredTarget = TARGETS.filter((t) => {
+    const el = document.querySelector(t.titleSelector);
+    if (el) {
+      return el;
+    }
+  });
+
+  if (filteredTarget.length > 0) {
+      targetObj = filteredTarget[0];
+      targetElement = document.querySelector(targetObj.titleSelector);
+  }
 
   // Create a container for the buttons.
   const buttonContainer = document.createElement("div");
 
-  // Filter target DOM that is not null
-  const filteredTarget = TARGETS.filter((t) => {
-    const _target = t.titleDom;
-    if (_target) {
-      return _target;
-    }
-  });
-
-  const targetObject = filteredTarget[0];
-  target = targetObject.titleDom;
-
   // Style button by layout
-  if (targetObject.useStyle) {
-    buttonContainer.style = targetObject.style;
-  } else {
-    targetObject.classList.forEach((i) => buttonContainer.classList.add(i));
+  if (targetObj) {
+      if (targetObj.useStyle) {
+        buttonContainer.style = targetObj.style;
+      } else {
+        targetObj.classList.forEach((i) => buttonContainer.classList.add(i));
+      }
   }
 
-  if (target) {
+  if (targetElement) {
     // Set the parent element's position to relative to allow for absolute positioning of the button container.
-    target.parentElement.style = "position: relative; align-items: center";
+    targetElement.parentElement.style = "position: relative; align-items: center";
 
     // Set the base style for the buttons.
     const buttonStyle = `
@@ -237,7 +252,8 @@ setTimeout(() => {
 
       // Event listeners.
       _button.addEventListener("click", () => {
-        copyText(button === "copyMarkdown", targetObject);
+        // Pass the target object which contains selectors, NOT the stale DOM element
+        copyText(button === "copyMarkdown", targetObj);
         _button.innerText = BUTTON_ACTION_TEXT;
         setTimeout(
           () => (_button.innerText = BUTTON_MAP[button].text),
@@ -260,6 +276,6 @@ setTimeout(() => {
     });
 
     // Add the button container to the parent element.
-    target.parentElement.appendChild(buttonContainer);
+    targetElement.parentElement.appendChild(buttonContainer);
   }
 }, WAIT_TIME);
