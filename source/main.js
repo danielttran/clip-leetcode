@@ -106,11 +106,19 @@ const copyText = async (action, targetObj) => {
     const doc = parser.parseFromString(htmlContent, 'text/html');
     const images = Array.from(doc.querySelectorAll('img'));
 
-    const imageReplacements = [];
-
     // Fetch all images via background script
     const fetchPromises = images.map(async (img) => {
-      const src = img.getAttribute('src');
+      let src = img.getAttribute('src');
+
+      // Resolve relative URLs
+      if (src && !src.startsWith('http') && !src.startsWith('data:')) {
+        try {
+          src = new URL(src, window.location.origin).href;
+        } catch (e) {
+          // ignore invalid URLs
+        }
+      }
+
       const alt = img.getAttribute('alt') || '';
       if (src) {
         try {
@@ -125,58 +133,23 @@ const copyText = async (action, targetObj) => {
               }
             });
           });
-          imageReplacements.push({ src, alt, replacement: `![${alt}](${dataUrl})` });
+          const textNode = doc.createTextNode(`![${alt}](${dataUrl})`);
+          img.parentNode.replaceChild(textNode, img);
         } catch (err) {
           console.error("Failed to fetch image:", src, err);
           // Fallback to original URL
-          imageReplacements.push({ src, alt, replacement: `![${alt}](${src})` });
+          const textNode = doc.createTextNode(`![${alt}](${src})`);
+          img.parentNode.replaceChild(textNode, img);
         }
+      } else {
+        const textNode = doc.createTextNode('');
+        img.parentNode.replaceChild(textNode, img);
       }
     });
 
-    await Promise.all(fetchPromises);
+    await Promise.allSettled(fetchPromises);
 
-    // Apply replacements
-    let markdown = htmlContent;
-    // Convert images first
-    // We need to be careful about replacing strings. 
-    // A safe way is to regex replace the img tag with the replacement.
-    // But simpler for now: reuse our previous regex logic but use the mapped values.
-
-    // Let's do a replace pass for each image we found and processed
-    // Note: This naive replacement assumes unique src/alt combos or consistent replacement.
-    // A robust way:
-    images.forEach(img => {
-      const src = img.getAttribute('src');
-      const alt = img.getAttribute('alt') || '';
-      const replacementObj = imageReplacements.find(r => r.src === src && r.alt === alt);
-      if (replacementObj) {
-        // Construct the img tag pattern roughly to replace it
-        // or just simple regex replace for this specific image if possible.
-        // Actually, let's use the replacement string we built.
-        // We need to substitute the IMG TEXT in the HTML with the Markdown Image string.
-        // This is tricky on raw HTML string.
-        // Better approach: modify the DOM we parsed, then serialize descriptionContent? 
-        // No, we are working on 'html' string which uses innerHTML.
-      }
-    });
-
-    // Alternative: Just regex replace all Img tags, and inside the callback, look up the dataUrl?
-    // Since we already fetched them, we can cache them by URL.
-    const urlMap = {};
-    imageReplacements.forEach(r => {
-      urlMap[r.src] = r.replacement;
-    });
-
-    markdown = markdown.replace(/<img[^>]*src="([^"]*)"[^>]*alt="([^"]*)"[^>]*>/g, (match, src, alt) => {
-      const key = imageReplacements.find(r => r.src === src && r.alt === alt);
-      return key ? key.replacement : `![${alt}](${src})`;
-    }).replace(/<img[^>]*alt="([^"]*)"[^>]*src="([^"]*)"[^>]*>/g, (match, alt, src) => {
-      const key = imageReplacements.find(r => r.src === src && r.alt === alt);
-      return key ? key.replacement : `![${alt}](${src})`;
-    });
-
-    return markdown;
+    return doc.body.innerHTML;
   };
 
   let value;
@@ -198,20 +171,101 @@ const copyText = async (action, targetObj) => {
       .replace(/(\n){2,}/g, "\n\n")
       .trim()}`;
 
-    // Try to get solution code
-    const lines = Array.from(document.querySelectorAll('.view-line'));
-    if (lines.length > 0) {
-      const code = lines.map(line => line.innerText).join('\n');
+    // Try to get solution code from Monaco directly
+    try {
+      const code = await new Promise((resolve) => {
+        // Create an ID for our communication
+        const eventId = "leetcode-clip-code-" + Date.now();
 
-      // Find language from DOM
-      let language = '';
-      const modeEl = document.querySelector('[data-mode-id]');
-      if (modeEl) {
-        language = modeEl.getAttribute('data-mode-id');
+        // Listen for the response
+        const listener = (event) => {
+          if (event.source !== window || !event.data || event.data.type !== eventId) return;
+          window.removeEventListener("message", listener);
+          resolve(event.data.code);
+        };
+        window.addEventListener("message", listener);
+
+        // Inject script to extract Monaco content from page context
+        const script = document.createElement("script");
+        script.textContent = `
+          (function() {
+            let codeStr = "";
+            let langStr = "";
+            try {
+              // Priority 1: Direct Monaco Editor Instance
+              const editorInstance = window.lcMonaco || window.monaco;
+              if (editorInstance && editorInstance.editor) {
+                const models = editorInstance.editor.getModels();
+                if (models.length > 0) {
+                  codeStr = models[0].getValue();
+                  langStr = models[0].getLanguageId();
+                }
+              }
+              
+              // Priority 2: Next.js state for default snippets (if no typing happened)
+              if (!codeStr && window.__NEXT_DATA__ && window.__NEXT_DATA__.props) {
+                 try {
+                     const queries = window.__NEXT_DATA__.props.pageProps.dehydratedState.queries;
+                     if (queries && queries.length > 1) {
+                         const snippets = queries[1].state.data.question.codeSnippets;
+                         if (snippets && snippets.length > 0) {
+                            // Default to first snippet or target language if known
+                            codeStr = snippets[0].code;
+                            langStr = snippets[0].langSlug;
+                         }
+                     }
+                 } catch (e) {}
+              }
+
+              // Priority 3: local storage where LeetCode caches user code drafts
+              if (!codeStr) {
+                  const keys = Object.keys(window.localStorage);
+                  // Find newest or most relevant problem slug code cache
+                  const slugObj = keys.find(k => k.endsWith('_code') || k.includes('pascal'));
+                  if (slugObj) {
+                     codeStr = window.localStorage.getItem(slugObj);
+                  }
+              }
+            } catch (e) {
+                console.error("Content extraction error", e);
+            }
+            window.postMessage({ type: "${eventId}", code: { text: codeStr, language: langStr } }, "*");
+          })();
+        `;
+        document.body.appendChild(script);
+
+        // Cleanup script
+        setTimeout(() => {
+          script.remove();
+          // Fail-safe resolution if Monaco wasn't found
+          resolve(null);
+        }, 500);
+      });
+
+      if (code && code.text) {
+        // Found code via React/localStorage API
+        let parsedLanguage = code.language || "";
+        if (!parsedLanguage) {
+          const modeEl = document.querySelector('[data-mode-id]');
+          if (modeEl) parsedLanguage = modeEl.getAttribute('data-mode-id');
+        }
+        value += `\n\n\`\`\`${parsedLanguage}\n${code.text}\n\`\`\``;
+      } else {
+        // Fallback to DOM extraction if script fails
+        const lines = Array.from(document.querySelectorAll('.view-line'));
+        if (lines.length > 0) {
+          // view-line includes span children that hold spaces nicely, but ensure formatting
+          const domCode = lines.map(line => line.textContent).join('\n');
+          let language = '';
+          const modeEl = document.querySelector('[data-mode-id]');
+          if (modeEl) {
+            language = modeEl.getAttribute('data-mode-id');
+          }
+          value += `\n\n\`\`\`${language}\n${domCode}\n\`\`\``;
+        }
       }
-
-      // Append code block to markdown
-      value += `\n\n\`\`\`${language}\n${code}\n\`\`\``;
+    } catch (e) {
+      console.error("Failed to extract code:", e);
     }
   } else {
     // Format the plain text string and add the title and URL.
