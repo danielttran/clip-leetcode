@@ -171,79 +171,35 @@ const copyText = async (action, targetObj) => {
       .replace(/(\n){2,}/g, "\n\n")
       .trim()}`;
 
-    // Try to get solution code from Monaco directly
+    // Try to get solution code natively bypassing CSP
     try {
-      const code = await new Promise((resolve) => {
-        // Create an ID for our communication
-        const eventId = "leetcode-clip-code-" + Date.now();
+      // Force lazy-loaded editor to initialize by scrolling it into view momentarily 
+      // This is crucial for problems where the user hasn't scrolled down yet
+      const previousScrollY = window.scrollY;
+      const editorWrapper = document.querySelector('.monaco-editor') || document.querySelector('[data-track-load="code_editor"]');
+      if (editorWrapper) {
+        editorWrapper.scrollIntoView({ behavior: 'instant', block: 'end' });
+        // Wait momentarily for React/Monaco Intersection Observers to build the text models
+        await new Promise(r => setTimeout(r, 150));
+        // Snap back
+        window.scrollTo({ top: previousScrollY, behavior: 'instant' });
+      }
 
-        // Listen for the response
-        const listener = (event) => {
-          if (event.source !== window || !event.data || event.data.type !== eventId) return;
-          window.removeEventListener("message", listener);
-          resolve(event.data.code);
-        };
-        window.addEventListener("message", listener);
-
-        // Inject script to extract Monaco content from page context
-        const script = document.createElement("script");
-        script.textContent = `
-          (function() {
-            let codeStr = "";
-            let langStr = "";
-            try {
-              // Priority 1: Direct Monaco Editor Instance
-              const editorInstance = window.lcMonaco || window.monaco;
-              if (editorInstance && editorInstance.editor) {
-                const models = editorInstance.editor.getModels();
-                if (models.length > 0) {
-                  codeStr = models[0].getValue();
-                  langStr = models[0].getLanguageId();
-                }
-              }
-              
-              // Priority 2: Next.js state for default snippets (if no typing happened)
-              if (!codeStr && window.__NEXT_DATA__ && window.__NEXT_DATA__.props) {
-                 try {
-                     const queries = window.__NEXT_DATA__.props.pageProps.dehydratedState.queries;
-                     if (queries && queries.length > 1) {
-                         const snippets = queries[1].state.data.question.codeSnippets;
-                         if (snippets && snippets.length > 0) {
-                            // Default to first snippet or target language if known
-                            codeStr = snippets[0].code;
-                            langStr = snippets[0].langSlug;
-                         }
-                     }
-                 } catch (e) {}
-              }
-
-              // Priority 3: local storage where LeetCode caches user code drafts
-              if (!codeStr) {
-                  const keys = Object.keys(window.localStorage);
-                  // Find newest or most relevant problem slug code cache
-                  const slugObj = keys.find(k => k.endsWith('_code') || k.includes('pascal'));
-                  if (slugObj) {
-                     codeStr = window.localStorage.getItem(slugObj);
-                  }
-              }
-            } catch (e) {
-                console.error("Content extraction error", e);
-            }
-            window.postMessage({ type: "${eventId}", code: { text: codeStr, language: langStr } }, "*");
-          })();
-        `;
-        document.body.appendChild(script);
-
-        // Cleanup script
-        setTimeout(() => {
-          script.remove();
-          // Fail-safe resolution if Monaco wasn't found
-          resolve(null);
-        }, 500);
+      const code = await new Promise((resolve, reject) => {
+        chrome.runtime.sendMessage({ action: "extract_code" }, (response) => {
+          if (chrome.runtime.lastError) {
+            console.error("Messaging Error:", chrome.runtime.lastError);
+            resolve(null);
+          } else if (response && response.success) {
+            resolve(response.data);
+          } else {
+            resolve(null);
+          }
+        });
       });
 
       if (code && code.text) {
-        // Found code via React/localStorage API
+        // Found code via Background Script Injection
         let parsedLanguage = code.language || "";
         if (!parsedLanguage) {
           const modeEl = document.querySelector('[data-mode-id]');
